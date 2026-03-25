@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SmartDiscover — Optimiseur Google Discover</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,300&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+
+  <div class="bg-grid"></div>
+  <div class="glow glow-1"></div>
+  <div class="glow glow-2"></div>
+
+  <header class="header">
+    <div class="logo">
+      <span class="logo-icon">◈</span>
+      <span class="logo-text">Smart<strong>Discover</strong></span>
+    </div>
+    <div class="header-right">
+      <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()" title="Changer de thème">
+        <span class="theme-icon">🌙</span>
+        <span class="theme-track"><span class="theme-thumb"></span></span>
+      </button>
+      <div class="badge">by SmartKeyword</div>
+    </div>
+  </header>
+
+  <main class="main">
+    <section class="hero">
+      <div class="hero-eyebrow">Moteur d'analyse SEO</div>
+      <h1 class="hero-title">Optimisez pour<br><em>Google Discover</em></h1>
+      <p class="hero-sub">Entités, titres CTR, E-E-A-T — une analyse complète propulsée par Gemini AI.</p>
+    </section>
+
+    {% if not api_key_configured %}
+    <div class="api-warning">
+      ⚠️ La variable d'environnement <code>GEMINI_API_KEY</code> n'est pas définie sur ce serveur. L'analyse ne fonctionnera pas.
+    </div>
+    {% endif %}
+
+    <div class="card-grid">
+
+      <div class="panel panel-form">
+
+        <div class="field-group">
+          <label class="field-label" for="category">
+            <span class="label-icon">🗂</span> Rubrique
+          </label>
+          <div class="select-wrap">
+            <select id="category" class="field-select">
+              {% for cat in categories %}
+              <option value="{{ cat }}">{{ cat }}</option>
+              {% endfor %}
+            </select>
+            <span class="select-arrow">▾</span>
+          </div>
+        </div>
+
+        <div class="field-group">
+          <label class="field-label">
+            <span class="label-icon">📥</span> Source du contenu
+          </label>
+          <div class="mode-toggle">
+            <button class="mode-btn active" id="btn-url" onclick="setMode('url')">🔗 URL</button>
+            <button class="mode-btn" id="btn-text" onclick="setMode('text')">✏️ Texte</button>
+            <button class="mode-btn" id="btn-file" onclick="setMode('file')">📎 Fichier</button>
+          </div>
+        </div>
+
+        <div id="url-section" class="field-group">
+          <div class="url-row">
+            <input type="url" id="url-input" class="field-input" placeholder="https://monsite.fr/article-a-analyser" />
+            <button class="btn-extract" id="btn-extract" onclick="extractFromUrl()">
+              <span id="extract-label">Extraire</span>
+            </button>
+          </div>
+          <div class="extract-status" id="extract-status"></div>
+        </div>
+
+        <div id="text-section" class="field-group hidden">
+          <textarea id="text-input" class="field-textarea" placeholder="Collez ici le texte complet de votre article..." rows="8"></textarea>
+        </div>
+
+        <div id="file-section" class="field-group hidden">
+          <div class="file-drop-zone" id="file-drop-zone" onclick="document.getElementById('file-input').click()">
+            <input type="file" id="file-input" accept=".txt,.docx" style="display:none" onchange="handleFileUpload(this.files[0])">
+            <div class="file-drop-icon">📄</div>
+            <div class="file-drop-text">Glissez un fichier ici<br><span>ou cliquez pour parcourir</span></div>
+            <div class="file-drop-hint">.txt ou .docx — max 8 000 caractères analysés</div>
+          </div>
+          <div class="extract-status" id="file-status"></div>
+        </div>
+
+        <div class="char-counter" id="char-counter">0 caractère</div>
+
+        <button class="btn-analyze" id="btn-analyze" onclick="analyze()">
+          <span class="btn-text">🔍 Analyser le contenu</span>
+          <span class="btn-loader hidden" id="loader">
+            <span class="spinner"></span> Analyse en cours…
+          </span>
+        </button>
+
+      </div>
+
+      <div class="panel panel-result" id="panel-result">
+        <div class="result-placeholder" id="result-placeholder">
+          <div class="placeholder-icon">◈</div>
+          <p>Votre rapport d'optimisation<br>apparaîtra ici.</p>
+        </div>
+        <div class="result-content hidden" id="result-content"></div>
+      </div>
+
+    </div>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
