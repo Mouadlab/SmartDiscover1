@@ -60,7 +60,7 @@ def analyze_with_gemini(category, content):
     genai.configure(api_key=GEMINI_API_KEY)
     model = genai.GenerativeModel("gemini-2.5-flash")
     prompt = f"""
-Tu es un expert mondial en SEO et spécialiste de l'algorithme Google Discover.
+Tu es un expert en SEO et spécialiste de l'algorithme Google Discover.
 Ta mission est d'optimiser un contenu pour qu'il devienne viral sur Discover.
 
 CONTEXTE :
