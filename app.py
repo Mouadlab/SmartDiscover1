@@ -1,9 +1,10 @@
 import os
+import re
 import io
-import html as html_module
 from flask import Flask, render_template, request, jsonify
 import google.generativeai as genai
 import requests
+from bs4 import BeautifulSoup
 
 # Optional .docx support
 try:
@@ -14,6 +15,7 @@ except ImportError:
 
 app = Flask(__name__)
 
+# Clé API chargée depuis la variable d'environnement
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 CATEGORIES = [
@@ -21,71 +23,6 @@ CATEGORIES = [
     "Sciences", "Société", "Monde", "Finance", "Education",
     "E-Commerce", "Actualités (news)", "Immobilier"
 ]
-
-
-def html_to_text(html):
-    """
-    Extraction de texte via state machine itérative caractère par caractère.
-    Aucun parser récursif, aucun regex DOTALL — impossible d'avoir RecursionError.
-    """
-    BLOCK_TAGS = {"p", "div", "li", "h1", "h2", "h3", "h4", "h5", "h6",
-                  "br", "tr", "section", "article", "blockquote"}
-    SKIP_TAGS  = {"script", "style", "noscript", "nav", "footer", "header",
-                  "aside", "form", "iframe", "svg", "figure"}
-
-    lines_out = []
-    skip_depth = 0
-    current_skip_tag = None
-    in_tag = False
-    tag_buf = []
-    text_buf = []
-
-    def flush_text():
-        t = "".join(text_buf).strip()
-        text_buf.clear()
-        if len(t) > 40:
-            lines_out.append(t)
-
-    for ch in html:
-        if in_tag:
-            if ch == ">":
-                in_tag = False
-                raw_tag = "".join(tag_buf).strip()
-                tag_buf.clear()
-                if not raw_tag:
-                    continue
-                closing = raw_tag.startswith("/")
-                parts = raw_tag.lstrip("/").split()
-                if not parts:
-                    continue
-                tag_name = parts[0].lower().rstrip("/")
-
-                if skip_depth > 0:
-                    if closing and tag_name == current_skip_tag:
-                        skip_depth -= 1
-                        if skip_depth == 0:
-                            current_skip_tag = None
-                    elif not closing and tag_name == current_skip_tag:
-                        skip_depth += 1
-                elif not closing and tag_name in SKIP_TAGS:
-                    flush_text()
-                    skip_depth = 1
-                    current_skip_tag = tag_name
-                elif tag_name in BLOCK_TAGS:
-                    flush_text()
-            else:
-                tag_buf.append(ch)
-        else:
-            if ch == "<":
-                in_tag = True
-                tag_buf.clear()
-            elif skip_depth == 0:
-                text_buf.append(ch)
-
-    flush_text()
-
-    result = "\n\n".join(html_module.unescape(line) for line in lines_out)
-    return result.strip()
 
 
 def extract_text_from_url(url):
@@ -97,19 +34,22 @@ def extract_text_from_url(url):
         )
     }
     try:
-        response = requests.get(url, headers=headers, timeout=15)
+        response = requests.get(url, headers=headers, timeout=10)
         response.raise_for_status()
-        raw_html = response.text[:200_000]
-        text = html_to_text(raw_html)
+        soup = BeautifulSoup(response.text, "html.parser")
+        for tag in soup(["script", "style", "nav", "footer", "header", "aside", "form", "noscript"]):
+            tag.decompose()
+        article = soup.find("article") or soup.find(id=re.compile(r"content|article|main|body", re.I))
+        target = article or soup.find("body") or soup
+        paragraphs = target.find_all("p")
+        text = "\n\n".join(p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 40)
         if len(text) < 100:
-            raise ValueError("Contenu textuel insuffisant extrait de cette page.")
+            text = target.get_text(separator="\n", strip=True)
         return text[:8000]
     except requests.exceptions.Timeout:
         raise ValueError("La requête a expiré. L'URL est peut-être inaccessible.")
     except requests.exceptions.HTTPError as e:
         raise ValueError(f"Erreur HTTP {e.response.status_code} lors de l'accès à l'URL.")
-    except ValueError:
-        raise
     except Exception as e:
         raise ValueError(f"Impossible d'extraire le contenu : {str(e)}")
 
@@ -120,7 +60,7 @@ def analyze_with_gemini(category, content):
     genai.configure(api_key=GEMINI_API_KEY)
     model = genai.GenerativeModel("gemini-2.5-flash")
     prompt = f"""
-Tu es un expert mondial en SEO et spécialiste de l'algorithme Google Discover.
+Tu es un expert en SEO et spécialiste de l'algorithme Google Discover.
 Ta mission est d'optimiser un contenu pour qu'il devienne viral sur Discover.
 
 CONTEXTE :
