@@ -44,6 +44,7 @@
 
     <div class="card-grid">
 
+      <!-- ===== PANNEAU FORMULAIRE ===== -->
       <div class="panel panel-form">
 
         <div class="field-group">
@@ -106,12 +107,75 @@
 
       </div>
 
+      <!-- ===== PANNEAU RÉSULTAT ===== -->
       <div class="panel panel-result" id="panel-result">
+
+        <!-- Placeholder initial -->
         <div class="result-placeholder" id="result-placeholder">
           <div class="placeholder-icon">◈</div>
           <p>Votre rapport d'optimisation<br>apparaîtra ici.</p>
         </div>
+
+        <!-- Écran de progression -->
+        <div class="analysis-progress hidden" id="analysis-progress">
+          <div class="progress-header">
+            <div class="progress-logo">◈</div>
+            <div class="progress-title">Analyse en cours…</div>
+            <div class="progress-subtitle" id="progress-subtitle">Connexion à Gemini AI</div>
+          </div>
+          <div class="progress-track">
+            <div class="progress-fill" id="progress-fill"></div>
+          </div>
+          <div class="progress-pct" id="progress-pct">0 %</div>
+          <div class="progress-steps" id="progress-steps">
+            <div class="progress-step" id="step-1">
+              <span class="step-dot"></span>
+              <span class="step-label">Lecture du contenu</span>
+            </div>
+            <div class="progress-step" id="step-2">
+              <span class="step-dot"></span>
+              <span class="step-label">Analyse des entités</span>
+            </div>
+            <div class="progress-step" id="step-3">
+              <span class="step-dot"></span>
+              <span class="step-label">Optimisation des titres</span>
+            </div>
+            <div class="progress-step" id="step-4">
+              <span class="step-dot"></span>
+              <span class="step-label">Évaluation E-E-A-T</span>
+            </div>
+            <div class="progress-step" id="step-5">
+              <span class="step-dot"></span>
+              <span class="step-label">Recommandations de réécriture</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Barre d'export -->
+        <div class="export-bar hidden" id="export-bar">
+          <div class="export-bar-label">Exporter</div>
+          <div class="export-group">
+            <span class="export-group-title">Rapport complet</span>
+            <button class="export-btn" onclick="exportFull('md')" title="Markdown">
+              <span class="export-icon">⬇</span> .md
+            </button>
+            <button class="export-btn" onclick="exportFull('txt')" title="Texte brut">
+              <span class="export-icon">⬇</span> .txt
+            </button>
+          </div>
+          <div class="export-divider"></div>
+          <div class="export-group export-sections">
+            <span class="export-group-title">Par section</span>
+            <button class="export-btn export-section-btn" onclick="exportSection(1)">§1 Entités</button>
+            <button class="export-btn export-section-btn" onclick="exportSection(2)">§2 Titres</button>
+            <button class="export-btn export-section-btn" onclick="exportSection(3)">§3 E-E-A-T</button>
+            <button class="export-btn export-section-btn" onclick="exportSection(4)">§4 Réécriture</button>
+          </div>
+        </div>
+
+        <!-- Contenu du rapport -->
         <div class="result-content hidden" id="result-content"></div>
+
       </div>
 
     </div>
