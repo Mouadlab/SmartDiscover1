@@ -1,393 +1,226 @@
-/* ============================
-   SmartDiscover — app.js
-   ============================ */
+import os
+import re
+import io
+import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from flask import Flask, render_template, request, jsonify, Response, stream_with_context
+import google.generativeai as genai
+import requests
+from bs4 import BeautifulSoup
 
-let currentMode = 'url';
-let contentText = '';
-let lastReportMarkdown = '';
+# Optional .docx support
+try:
+    import docx
+    DOCX_AVAILABLE = True
+except ImportError:
+    DOCX_AVAILABLE = False
 
-// ===== THEME =====
-function toggleTheme() {
-  const isLight = document.body.classList.toggle('light');
-  document.querySelector('.theme-icon').textContent = isLight ? '☀️' : '🌙';
-  localStorage.setItem('sd-theme', isLight ? 'light' : 'dark');
-}
+app = Flask(__name__)
 
-(function () {
-  if (localStorage.getItem('sd-theme') === 'light') {
-    document.body.classList.add('light');
-    document.addEventListener('DOMContentLoaded', () => {
-      const icon = document.querySelector('.theme-icon');
-      if (icon) icon.textContent = '☀️';
-    });
-  }
-})();
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
-// ===== MODE TOGGLE =====
-function setMode(mode) {
-  currentMode = mode;
-  document.getElementById('url-section').classList.toggle('hidden', mode !== 'url');
-  document.getElementById('text-section').classList.toggle('hidden', mode !== 'text');
-  document.getElementById('file-section').classList.toggle('hidden', mode !== 'file');
-  document.getElementById('btn-url').classList.toggle('active', mode === 'url');
-  document.getElementById('btn-text').classList.toggle('active', mode === 'text');
-  document.getElementById('btn-file').classList.toggle('active', mode === 'file');
-  updateCounter();
-}
+CATEGORIES = [
+    "Technologie", "Santé", "Politique", "Economie", "Climat",
+    "Sciences", "Société", "Monde", "Finance", "Education",
+    "E-Commerce", "Actualités (news)", "Immobilier"
+]
 
-// ===== CHAR COUNTER =====
-function updateCounter() {
-  let len = currentMode === 'text'
-    ? document.getElementById('text-input').value.length
-    : contentText.length;
-  const el = document.getElementById('char-counter');
-  el.textContent = `${len.toLocaleString('fr-FR')} caractère${len !== 1 ? 's' : ''}`;
-  el.style.color = len < 50 ? 'var(--danger)' : len > 200 ? 'var(--accent)' : 'var(--text-dim)';
-}
+# ── Définition des 4 sections ────────────────────────────────────────────────
+SECTIONS = [
+    {
+        "index": 1,
+        "title": "Analyse des Entités (Knowledge Graph)",
+        "prompt": (
+            "## 1. Analyse des Entités (Knowledge Graph)\n"
+            "* **Entités Principales Identifiées :** Liste les personnes, lieux, "
+            "organisations ou concepts clés trouvés.\n"
+            "* **Entités Manquantes (Opportunités) :** Quelles entités sémantiquement "
+            "proches ou contextuelles (LSI) manquent ?"
+        ),
+    },
+    {
+        "index": 2,
+        "title": "Optimisation des Titres (Haut CTR pour Discover)",
+        "prompt": (
+            "## 2. Optimisation des Titres (Haut CTR pour Discover)\n"
+            "Propose 5 titres optimisés pour Google Discover. Ils doivent être "
+            "accrocheurs sans être du clickbait mensonger.\n"
+            "* Titre 1 :\n* Titre 2 :\n* Titre 3 :\n* Titre 4 :\n* Titre 5 :"
+        ),
+    },
+    {
+        "index": 3,
+        "title": "Concepts Manquants & Profondeur (E-E-A-T)",
+        "prompt": (
+            "## 3. Concepts Manquants & Profondeur (E-E-A-T)\n"
+            "Identifie les concepts ou sous-sujets absents qui empêchent cet article "
+            "d'être la référence ultime sur le sujet."
+        ),
+    },
+    {
+        "index": 4,
+        "title": "Recommandations de Réécriture",
+        "prompt": (
+            "## 4. Recommandations de Réécriture\n"
+            "Propose 2 ou 3 paragraphes spécifiques réécrits pour améliorer :\n"
+            "* L'accroche (le début de l'article).\n"
+            "* La clarté d'un passage complexe.\n"
+            "* L'ajout d'émotion ou d'expertise."
+        ),
+    },
+]
 
-document.getElementById('text-input').addEventListener('input', updateCounter);
-document.getElementById('url-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') extractFromUrl(); });
 
-// ===== URL EXTRACTION =====
-async function extractFromUrl() {
-  const url = document.getElementById('url-input').value.trim();
-  const status = document.getElementById('extract-status');
-  const btn = document.getElementById('btn-extract');
-  const label = document.getElementById('extract-label');
-
-  if (!url) { showStatus(status, 'error', '⚠️ Veuillez entrer une URL valide.'); return; }
-
-  btn.disabled = true;
-  label.textContent = 'Extraction…';
-  showStatus(status, '', '');
-
-  try {
-    const res = await fetch('/extract', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url })
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      showStatus(status, 'error', `❌ ${data.error}`);
-    } else {
-      contentText = data.content;
-      const words = contentText.split(/\s+/).length;
-      showStatus(status, 'success', `✅ ${words.toLocaleString('fr-FR')} mots extraits.`);
-      updateCounter();
+def extract_text_from_url(url):
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        )
     }
-  } catch (err) {
-    showStatus(status, 'error', '❌ Erreur réseau.');
-  } finally {
-    btn.disabled = false;
-    label.textContent = 'Extraire';
-  }
-}
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+        for tag in soup(["script", "style", "nav", "footer", "header", "aside", "form", "noscript"]):
+            tag.decompose()
+        article = soup.find("article") or soup.find(id=re.compile(r"content|article|main|body", re.I))
+        target = article or soup.find("body") or soup
+        paragraphs = target.find_all("p")
+        text = "\n\n".join(p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 40)
+        if len(text) < 100:
+            text = target.get_text(separator="\n", strip=True)
+        return text[:8000]
+    except requests.exceptions.Timeout:
+        raise ValueError("La requête a expiré. L'URL est peut-être inaccessible.")
+    except requests.exceptions.HTTPError as e:
+        raise ValueError(f"Erreur HTTP {e.response.status_code} lors de l'accès à l'URL.")
+    except Exception as e:
+        raise ValueError(f"Impossible d'extraire le contenu : {str(e)}")
 
-// ===== FILE UPLOAD =====
-async function handleFileUpload(file) {
-  if (!file) return;
-  const status = document.getElementById('file-status');
-  const dropZone = document.getElementById('file-drop-zone');
 
-  showStatus(status, '', '⏳ Lecture du fichier…');
+def call_gemini_section(section, category, content):
+    """Appelle Gemini pour UNE section. Exécuté en parallèle."""
+    prompt = f"""Tu es un expert en SEO et spécialiste de l'algorithme Google Discover.
+Analyse le contenu suivant et réponds UNIQUEMENT à la section demandée, en Markdown, en Français.
 
-  const formData = new FormData();
-  formData.append('file', file);
+CONTEXTE :
+- Rubrique : {category}
+- Contenu à analyser :
+"{content}"
 
-  try {
-    const res = await fetch('/upload', { method: 'POST', body: formData });
-    const data = await res.json();
+TÂCHE — réponds uniquement à cette section :
+{section['prompt']}
+"""
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel("gemini-2.5-flash")
+    response = model.generate_content(prompt)
+    return section["index"], response.text.strip()
 
-    if (!res.ok) {
-      showStatus(status, 'error', `❌ ${data.error}`);
-      dropZone.classList.remove('has-file');
-    } else {
-      contentText = data.content;
-      const words = contentText.split(/\s+/).length;
-      dropZone.classList.add('has-file');
-      let nameEl = dropZone.querySelector('.file-name-display');
-      if (!nameEl) {
-        nameEl = document.createElement('div');
-        nameEl.className = 'file-name-display';
-        dropZone.appendChild(nameEl);
-      }
-      nameEl.textContent = `📄 ${file.name}`;
-      showStatus(status, 'success', `✅ ${words.toLocaleString('fr-FR')} mots chargés.`);
-      updateCounter();
-    }
-  } catch (err) {
-    showStatus(status, 'error', '❌ Erreur lors de la lecture du fichier.');
-  }
-}
 
-document.addEventListener('DOMContentLoaded', () => {
-  const dropZone = document.getElementById('file-drop-zone');
-  dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('drag-over'); });
-  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
-  dropZone.addEventListener('drop', (e) => {
-    e.preventDefault();
-    dropZone.classList.remove('drag-over');
-    const file = e.dataTransfer.files[0];
-    if (file) { document.getElementById('file-input').files = e.dataTransfer.files; handleFileUpload(file); }
-  });
-});
+@app.route("/")
+def index():
+    api_key_configured = bool(GEMINI_API_KEY)
+    return render_template("index.html", categories=CATEGORIES, api_key_configured=api_key_configured)
 
-// ===== PROGRESS =====
-const STEPS = [
-  { id: 'step-1', label: 'Lecture du contenu',            pct: 15 },
-  { id: 'step-2', label: 'Analyse des entités',           pct: 35 },
-  { id: 'step-3', label: 'Optimisation des titres',       pct: 55 },
-  { id: 'step-4', label: 'Évaluation E-E-A-T',            pct: 75 },
-  { id: 'step-5', label: 'Recommandations de réécriture', pct: 92 },
-];
 
-let progressTimer = null;
+@app.route("/extract", methods=["POST"])
+def extract():
+    data = request.get_json()
+    url = data.get("url", "").strip()
+    if not url:
+        return jsonify({"error": "URL manquante."}), 400
+    try:
+        text = extract_text_from_url(url)
+        if len(text) < 50:
+            return jsonify({"error": "Contenu insuffisant extrait de cette URL."}), 422
+        return jsonify({"content": text})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 422
 
-function startProgress() {
-  document.getElementById('result-placeholder').classList.add('hidden');
-  document.getElementById('analysis-progress').classList.remove('hidden');
-  setProgress(0, 'Connexion à Gemini AI');
-  STEPS.forEach(s => document.getElementById(s.id).classList.remove('active', 'done'));
 
-  let stepIdx = 0;
-  const delays = [400, 1800, 3400, 5200, 7200];
+# ── Route analyze : 4 appels parallèles + SSE ───────────────────────────────
+@app.route("/analyze", methods=["POST"])
+def analyze():
+    data = request.get_json()
+    category = data.get("category", "Technologie")
+    content = data.get("content", "").strip()
 
-  function tick() {
-    if (stepIdx >= STEPS.length) return;
-    STEPS.slice(0, stepIdx).forEach(s => {
-      document.getElementById(s.id).classList.replace('active', 'done') ||
-      document.getElementById(s.id).classList.remove('active');
-      document.getElementById(s.id).classList.add('done');
-    });
-    document.getElementById(STEPS[stepIdx].id).classList.add('active');
-    setProgress(STEPS[stepIdx].pct, STEPS[stepIdx].label);
-    stepIdx++;
-    if (stepIdx < STEPS.length)
-      progressTimer = setTimeout(tick, delays[stepIdx] - delays[stepIdx - 1]);
-  }
-  progressTimer = setTimeout(tick, delays[0]);
-}
+    if len(content) < 50:
+        return jsonify({"error": "Le texte est trop court pour être analysé."}), 400
 
-function finishProgress() {
-  clearTimeout(progressTimer);
-  STEPS.forEach(s => {
-    const el = document.getElementById(s.id);
-    el.classList.remove('active');
-    el.classList.add('done');
-  });
-  setProgress(100, 'Rapport prêt ✓');
-  document.getElementById('progress-pct').style.color = 'var(--accent)';
-}
+    if not GEMINI_API_KEY:
+        return jsonify({"error": "La variable d'environnement GEMINI_API_KEY n'est pas définie."}), 500
 
-function setProgress(pct, subtitle) {
-  document.getElementById('progress-fill').style.width = pct + '%';
-  document.getElementById('progress-pct').textContent = pct + ' %';
-  if (subtitle) document.getElementById('progress-subtitle').textContent = subtitle;
-}
+    def generate():
+        try:
+            results = {}
 
-function hideProgress() {
-  document.getElementById('analysis-progress').classList.add('hidden');
-}
+            # Lance les 4 appels Gemini en parallèle
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                futures = {
+                    executor.submit(call_gemini_section, section, category, content): section
+                    for section in SECTIONS
+                }
+                for future in as_completed(futures):
+                    try:
+                        idx, text = future.result()
+                        results[idx] = text
+                        # Envoie un token de progression au frontend
+                        yield f"data: {json.dumps({'progress': idx})}\n\n"
+                    except Exception as e:
+                        yield f"data: {json.dumps({'error': str(e)})}\n\n"
+                        return
 
-// ===== RENDER HELPER =====
-// Affiche le rapport (complet ou partiel) — utilisé par le stream normal et le fallback erreur réseau
-function renderReport(resultContent, exportBar) {
-  if (lastReportMarkdown.length > 50) {
-    finishProgress();
-    setTimeout(() => {
-      hideProgress();
-      resultContent.innerHTML = marked.parse(lastReportMarkdown);
-      resultContent.classList.remove('hidden');
-      exportBar.classList.remove('hidden');
-      exportBar.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }, 400);
-  } else {
-    hideProgress();
-    showResult('error', '❌ Aucun contenu reçu. Réessayez.');
-  }
-}
+            # Assemble le rapport final dans l'ordre des sections
+            full_report = "\n\n".join(results[s["index"]] for s in SECTIONS)
+            yield f"data: {json.dumps({'report': full_report})}\n\n"
+            yield f"data: {json.dumps({'done': True})}\n\n"
 
-// ===== ANALYZE — streaming SSE =====
-async function analyze() {
-  const category = document.getElementById('category').value;
-  const content = currentMode === 'text'
-    ? document.getElementById('text-input').value.trim()
-    : contentText;
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
-  const btn      = document.getElementById('btn-analyze');
-  const btnText  = document.querySelector('.btn-text');
-  const loader   = document.getElementById('loader');
-  const resultContent = document.getElementById('result-content');
-  const exportBar     = document.getElementById('export-bar');
-
-  if (content.length < 50) {
-    const msgs = {
-      url:  '⚠️ Aucun contenu extrait. Cliquez sur "Extraire" d\'abord.',
-      text: '⚠️ Le texte est trop court (min. 50 caractères).',
-      file: '⚠️ Aucun fichier chargé. Déposez un fichier .txt ou .docx.'
-    };
-    showResult('error', msgs[currentMode]);
-    return;
-  }
-
-  btn.disabled = true;
-  btnText.classList.add('hidden');
-  loader.classList.remove('hidden');
-  resultContent.classList.add('hidden');
-  exportBar.classList.add('hidden');
-  lastReportMarkdown = '';
-
-  startProgress();
-
-  try {
-    const res = await fetch('/analyze', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ category, content })
-    });
-
-    if (!res.ok) {
-      // Erreur HTTP classique (400/500)
-      const data = await res.json().catch(() => ({ error: `Erreur HTTP ${res.status}` }));
-      finishProgress();
-      setTimeout(() => { hideProgress(); showResult('error', `❌ ${data.error}`); }, 300);
-      return;
-    }
-
-    // Lecture du stream SSE ligne par ligne
-    const reader  = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer    = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop(); // conserve la ligne incomplète
-
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        let payload;
-        try { payload = JSON.parse(line.slice(6)); } catch { continue; }
-
-        if (payload.error) {
-          finishProgress();
-          setTimeout(() => { hideProgress(); showResult('error', `❌ ${payload.error}`); }, 300);
-          return;
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
         }
-        if (payload.token) {
-          lastReportMarkdown += payload.token;
-        }
-        if (payload.done) {
-          finishProgress();
-          setTimeout(() => {
-            hideProgress();
-            resultContent.innerHTML = marked.parse(lastReportMarkdown);
-            resultContent.classList.remove('hidden');
-            exportBar.classList.remove('hidden');
-            exportBar.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          }, 500);
-          return;
-        }
-      }
-    }
+    )
 
-    // Fallback : stream fermé sans signal done
-    renderReport(resultContent, exportBar);
 
-  } catch (err) {
-    // NS_ERROR_NET_PARTIAL_TRANSFER : si on a du contenu partiel, on l'affiche
-    clearTimeout(progressTimer);
-    renderReport(resultContent, exportBar);
-  } finally {
-    btn.disabled = false;
-    btnText.classList.remove('hidden');
-    loader.classList.add('hidden');
-  }
-}
+@app.route("/upload", methods=["POST"])
+def upload():
+    if "file" not in request.files:
+        return jsonify({"error": "Aucun fichier reçu."}), 400
 
-// ===== EXPORT =====
-function parseSections(markdown) {
-  const sections = [];
-  let current = null;
-  for (const line of markdown.split('\n')) {
-    const match = line.match(/^##\s+(\d+)\.\s+(.+)/);
-    if (match) {
-      if (current) sections.push(current);
-      current = { index: parseInt(match[1]), title: match[2].trim(), lines: [line] };
-    } else if (current) {
-      current.lines.push(line);
-    }
-  }
-  if (current) sections.push(current);
-  return sections;
-}
+    file = request.files["file"]
+    filename = file.filename.lower()
 
-function slugDate() { return new Date().toISOString().slice(0, 10); }
+    try:
+        if filename.endswith(".txt"):
+            raw = file.read()
+            text = raw.decode("utf-8", errors="replace")
+        elif filename.endswith(".docx"):
+            if not DOCX_AVAILABLE:
+                return jsonify({"error": "Support .docx non disponible. Installez python-docx."}), 500
+            doc = docx.Document(io.BytesIO(file.read()))
+            text = "\n\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        elif filename.endswith(".doc"):
+            return jsonify({"error": "Le format .doc n'est pas supporté. Convertissez en .docx ou .txt."}), 422
+        else:
+            return jsonify({"error": "Format non supporté. Utilisez .txt ou .docx."}), 422
 
-function downloadText(filename, text) {
-  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement('a');
-  a.href = url; a.download = filename; a.click();
-  URL.revokeObjectURL(url);
-}
+        text = text.strip()[:8000]
+        if len(text) < 50:
+            return jsonify({"error": "Le fichier semble vide ou trop court."}), 422
+        return jsonify({"content": text})
 
-function exportFull(format) {
-  if (!lastReportMarkdown) return;
-  const cat  = document.getElementById('category').value.replace(/\s+/g, '-');
-  const date = slugDate();
-  if (format === 'md') {
-    downloadText(`smartdiscover-${cat}-${date}.md`,
-      `# Rapport SmartDiscover — ${cat}\n_Généré le ${date}_\n\n---\n\n` + lastReportMarkdown);
-  } else {
-    downloadText(`smartdiscover-${cat}-${date}.txt`,
-      `RAPPORT SMARTDISCOVER — ${cat.toUpperCase()}\nGénéré le ${date}\n${'='.repeat(50)}\n\n` + markdownToPlain(lastReportMarkdown));
-  }
-}
+    except Exception as e:
+        return jsonify({"error": f"Erreur lors de la lecture du fichier : {str(e)}"}), 500
 
-function exportSection(num) {
-  if (!lastReportMarkdown) return;
-  const section = parseSections(lastReportMarkdown).find(s => s.index === num);
-  if (!section) { alert('Section introuvable.'); return; }
-  const cat    = document.getElementById('category').value.replace(/\s+/g, '-');
-  const date   = slugDate();
-  const slug   = `s${num}-${section.title.toLowerCase().replace(/[^a-z0-9]+/gi, '-').slice(0, 30)}`;
-  const mdContent = section.lines.join('\n');
-  if (window._shiftDown) {
-    downloadText(`smartdiscover-${cat}-${slug}-${date}.txt`,
-      `SECTION ${num} — ${section.title.toUpperCase()}\nGénéré le ${date}\n${'='.repeat(50)}\n\n` + markdownToPlain(mdContent));
-  } else {
-    downloadText(`smartdiscover-${cat}-${slug}-${date}.md`,
-      `# Section ${num} — ${section.title}\n_Rapport SmartDiscover — ${cat} — ${date}_\n\n---\n\n` + mdContent);
-  }
-}
 
-window._shiftDown = false;
-document.addEventListener('keydown', e => { if (e.key === 'Shift') window._shiftDown = true; });
-document.addEventListener('keyup',   e => { if (e.key === 'Shift') window._shiftDown = false; });
-
-function markdownToPlain(md) {
-  return md
-    .replace(/^#{1,6}\s+/gm, '').replace(/\*\*(.+?)\*\*/g, '$1')
-    .replace(/\*(.+?)\*/g, '$1').replace(/`(.+?)`/g, '$1')
-    .replace(/^\s*[-*+]\s+/gm, '• ').replace(/^\s*\d+\.\s+/gm, '')
-    .replace(/^>\s+/gm, '  ').replace(/\[(.+?)\]\(.+?\)/g, '$1')
-    .replace(/---+/g, '─'.repeat(40)).replace(/\n{3,}/g, '\n\n').trim();
-}
-
-// ===== HELPERS =====
-function showStatus(el, type, msg) {
-  el.className = `extract-status ${type}`;
-  el.textContent = msg;
-}
-
-function showResult(type, message) {
-  const rc = document.getElementById('result-content');
-  document.getElementById('result-placeholder').classList.add('hidden');
-  rc.innerHTML = type === 'error' ? `<div class="error-box">${message}</div>` : message;
-  rc.classList.remove('hidden');
-}
+if __name__ == "__main__":
+    app.run(debug=False)
