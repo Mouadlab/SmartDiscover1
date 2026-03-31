@@ -4,6 +4,7 @@
 
 let currentMode = 'url';
 let contentText = '';
+let lastReportMarkdown = '';
 
 // ===== THEME =====
 function toggleTheme() {
@@ -132,7 +133,73 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 });
 
-// ===== ANALYZE =====
+// ===== PROGRESS =====
+const STEPS = [
+  { id: 'step-1', label: 'Lecture du contenu',             pct: 15 },
+  { id: 'step-2', label: 'Analyse des entités',            pct: 35 },
+  { id: 'step-3', label: 'Optimisation des titres',        pct: 55 },
+  { id: 'step-4', label: 'Évaluation E-E-A-T',             pct: 75 },
+  { id: 'step-5', label: 'Recommandations de réécriture',  pct: 92 },
+];
+
+let progressTimer = null;
+
+function startProgress() {
+  const progress = document.getElementById('analysis-progress');
+  const placeholder = document.getElementById('result-placeholder');
+  placeholder.classList.add('hidden');
+  progress.classList.remove('hidden');
+
+  setProgress(0, 'Connexion à Gemini AI');
+  STEPS.forEach(s => {
+    const el = document.getElementById(s.id);
+    el.classList.remove('active', 'done');
+  });
+
+  let stepIdx = 0;
+  const delays = [400, 1800, 3400, 5200, 7200];
+
+  function tick() {
+    if (stepIdx >= STEPS.length) return;
+    const step = STEPS[stepIdx];
+    STEPS.slice(0, stepIdx).forEach(s => {
+      const el = document.getElementById(s.id);
+      el.classList.remove('active');
+      el.classList.add('done');
+    });
+    const el = document.getElementById(step.id);
+    el.classList.add('active');
+    setProgress(step.pct, step.label);
+    stepIdx++;
+    if (stepIdx < STEPS.length) {
+      progressTimer = setTimeout(tick, delays[stepIdx] - delays[stepIdx - 1]);
+    }
+  }
+  progressTimer = setTimeout(tick, delays[0]);
+}
+
+function finishProgress() {
+  clearTimeout(progressTimer);
+  STEPS.forEach(s => {
+    const el = document.getElementById(s.id);
+    el.classList.remove('active');
+    el.classList.add('done');
+  });
+  setProgress(100, 'Rapport prêt ✓');
+  document.getElementById('progress-pct').style.color = 'var(--accent)';
+}
+
+function setProgress(pct, subtitle) {
+  document.getElementById('progress-fill').style.width = pct + '%';
+  document.getElementById('progress-pct').textContent = pct + ' %';
+  if (subtitle) document.getElementById('progress-subtitle').textContent = subtitle;
+}
+
+function hideProgress() {
+  document.getElementById('analysis-progress').classList.add('hidden');
+}
+
+// ===== ANALYZE (streaming SSE) =====
 async function analyze() {
   const category = document.getElementById('category').value;
   const content = currentMode === 'text'
@@ -143,7 +210,7 @@ async function analyze() {
   const btnText = document.querySelector('.btn-text');
   const loader = document.getElementById('loader');
   const resultContent = document.getElementById('result-content');
-  const placeholder = document.getElementById('result-placeholder');
+  const exportBar = document.getElementById('export-bar');
 
   if (content.length < 50) {
     const msgs = {
@@ -155,11 +222,15 @@ async function analyze() {
     return;
   }
 
+  // Reset UI
   btn.disabled = true;
   btnText.classList.add('hidden');
   loader.classList.remove('hidden');
-  placeholder.classList.add('hidden');
   resultContent.classList.add('hidden');
+  exportBar.classList.add('hidden');
+  lastReportMarkdown = '';
+
+  startProgress();
 
   try {
     const res = await fetch('/analyze', {
@@ -167,15 +238,64 @@ async function analyze() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ category, content })
     });
-    const data = await res.json();
+
     if (!res.ok) {
-      showResult('error', `❌ ${data.error}`);
-    } else {
-      resultContent.innerHTML = marked.parse(data.report);
-      resultContent.classList.remove('hidden');
-      resultContent.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      const data = await res.json();
+      finishProgress();
+      setTimeout(() => { hideProgress(); showResult('error', `❌ ${data.error}`); }, 300);
+      return;
     }
+
+    // Lecture du stream SSE
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      // Traite chaque ligne SSE complète
+      const lines = buffer.split('\n');
+      buffer = lines.pop(); // garde la ligne incomplète pour le prochain chunk
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const payload = JSON.parse(line.slice(6));
+
+          if (payload.error) {
+            finishProgress();
+            setTimeout(() => { hideProgress(); showResult('error', `❌ ${payload.error}`); }, 300);
+            return;
+          }
+
+          if (payload.done) {
+            // Stream terminé — rend le Markdown complet
+            finishProgress();
+            setTimeout(() => {
+              hideProgress();
+              resultContent.innerHTML = marked.parse(lastReportMarkdown);
+              resultContent.classList.remove('hidden');
+              exportBar.classList.remove('hidden');
+              exportBar.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }, 500);
+            return;
+          }
+
+          if (payload.token) {
+            lastReportMarkdown += payload.token;
+          }
+
+        } catch (_) { /* ignore les lignes mal formées */ }
+      }
+    }
+
   } catch (err) {
+    clearTimeout(progressTimer);
+    hideProgress();
     showResult('error', '❌ Erreur réseau. Vérifiez votre connexion.');
   } finally {
     btn.disabled = false;
@@ -184,6 +304,92 @@ async function analyze() {
   }
 }
 
+// ===== EXPORT =====
+function parseSections(markdown) {
+  const lines = markdown.split('\n');
+  const sections = [];
+  let current = null;
+  for (const line of lines) {
+    const match = line.match(/^##\s+(\d+)\.\s+(.+)/);
+    if (match) {
+      if (current) sections.push(current);
+      current = { index: parseInt(match[1]), title: match[2].trim(), lines: [line] };
+    } else if (current) {
+      current.lines.push(line);
+    }
+  }
+  if (current) sections.push(current);
+  return sections;
+}
+
+function slugDate() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function downloadText(filename, text) {
+  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function exportFull(format) {
+  if (!lastReportMarkdown) return;
+  const category = document.getElementById('category').value.replace(/\s+/g, '-');
+  const date = slugDate();
+  if (format === 'md') {
+    const header = `# Rapport SmartDiscover — ${category}\n_Généré le ${date}_\n\n---\n\n`;
+    downloadText(`smartdiscover-${category}-${date}.md`, header + lastReportMarkdown);
+  } else {
+    const plain = markdownToPlain(lastReportMarkdown);
+    const header = `RAPPORT SMARTDISCOVER — ${category.toUpperCase()}\nGénéré le ${date}\n${'='.repeat(50)}\n\n`;
+    downloadText(`smartdiscover-${category}-${date}.txt`, header + plain);
+  }
+}
+
+function exportSection(num) {
+  if (!lastReportMarkdown) return;
+  const sections = parseSections(lastReportMarkdown);
+  const section = sections.find(s => s.index === num);
+  if (!section) { alert('Section introuvable dans le rapport.'); return; }
+  const category = document.getElementById('category').value.replace(/\s+/g, '-');
+  const date = slugDate();
+  const slug = `s${num}-${section.title.toLowerCase().replace(/[^a-z0-9]+/gi, '-').slice(0, 30)}`;
+  const mdContent = section.lines.join('\n');
+  const isShift = window._shiftDown;
+  if (isShift) {
+    const plain = markdownToPlain(mdContent);
+    const header = `SECTION ${num} — ${section.title.toUpperCase()}\nGénéré le ${date}\n${'='.repeat(50)}\n\n`;
+    downloadText(`smartdiscover-${category}-${slug}-${date}.txt`, header + plain);
+  } else {
+    const header = `# Section ${num} — ${section.title}\n_Rapport SmartDiscover — ${category} — ${date}_\n\n---\n\n`;
+    downloadText(`smartdiscover-${category}-${slug}-${date}.md`, header + mdContent);
+  }
+}
+
+window._shiftDown = false;
+document.addEventListener('keydown', (e) => { if (e.key === 'Shift') window._shiftDown = true; });
+document.addEventListener('keyup', (e) => { if (e.key === 'Shift') window._shiftDown = false; });
+
+function markdownToPlain(md) {
+  return md
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/\*(.+?)\*/g, '$1')
+    .replace(/`(.+?)`/g, '$1')
+    .replace(/^\s*[-*+]\s+/gm, '• ')
+    .replace(/^\s*\d+\.\s+/gm, '')
+    .replace(/^>\s+/gm, '  ')
+    .replace(/\[(.+?)\]\(.+?\)/g, '$1')
+    .replace(/---+/g, '─'.repeat(40))
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+// ===== HELPERS =====
 function showStatus(el, type, msg) {
   el.className = `extract-status ${type}`;
   el.textContent = msg;
