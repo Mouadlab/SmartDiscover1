@@ -1,7 +1,8 @@
 import os
 import re
 import io
-from flask import Flask, render_template, request, jsonify
+import json
+from flask import Flask, render_template, request, jsonify, Response, stream_with_context
 import google.generativeai as genai
 import requests
 from bs4 import BeautifulSoup
@@ -15,7 +16,6 @@ except ImportError:
 
 app = Flask(__name__)
 
-# Clé API chargée depuis la variable d'environnement
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 CATEGORIES = [
@@ -54,12 +54,8 @@ def extract_text_from_url(url):
         raise ValueError(f"Impossible d'extraire le contenu : {str(e)}")
 
 
-def analyze_with_gemini(category, content):
-    if not GEMINI_API_KEY:
-        raise ValueError("La variable d'environnement GEMINI_API_KEY n'est pas définie sur ce serveur.")
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel("gemini-2.5-flash")
-    prompt = f"""
+def build_prompt(category, content):
+    return f"""
 Tu es un expert en SEO et spécialiste de l'algorithme Google Discover.
 Ta mission est d'optimiser un contenu pour qu'il devienne viral sur Discover.
 
@@ -91,8 +87,6 @@ Propose 2 ou 3 paragraphes spécifiques réécrits pour améliorer l'accroche, l
 
 Réponds en Français, avec un ton professionnel et pédagogique.
 """
-    response = model.generate_content(prompt)
-    return response.text
 
 
 @app.route("/")
@@ -116,20 +110,46 @@ def extract():
         return jsonify({"error": str(e)}), 422
 
 
+# ── Route analyze : streaming SSE ──────────────────────────────────────────
 @app.route("/analyze", methods=["POST"])
 def analyze():
     data = request.get_json()
     category = data.get("category", "Technologie")
     content = data.get("content", "").strip()
+
     if len(content) < 50:
         return jsonify({"error": "Le texte est trop court pour être analysé."}), 400
-    try:
-        result = analyze_with_gemini(category, content)
-        return jsonify({"report": result})
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 500
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+
+    if not GEMINI_API_KEY:
+        return jsonify({"error": "La variable d'environnement GEMINI_API_KEY n'est pas définie."}), 500
+
+    def generate():
+        try:
+            genai.configure(api_key=GEMINI_API_KEY)
+            model = genai.GenerativeModel("gemini-2.5-flash")
+            prompt = build_prompt(category, content)
+
+            # stream=True : Gemini envoie les tokens au fur et à mesure
+            for chunk in model.generate_content(prompt, stream=True):
+                text = getattr(chunk, "text", None)
+                if text:
+                    # Format SSE : "data: <json>\n\n"
+                    yield f"data: {json.dumps({'token': text})}\n\n"
+
+            # Signal de fin
+            yield f"data: {json.dumps({'done': True})}\n\n"
+
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",   # désactive le buffering Nginx/Render
+        }
+    )
 
 
 @app.route("/upload", methods=["POST"])
