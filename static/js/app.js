@@ -251,11 +251,13 @@ async function analyze() {
 
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
 
-      buffer += decoder.decode(value, { stream: true });
+      // Traite aussi le buffer résiduel quand le stream se ferme
+      const chunk = done ? '' : decoder.decode(value, { stream: true });
+      buffer += chunk;
       const lines = buffer.split('\n');
-      buffer = lines.pop();
+      // Si stream fermé, traite toutes les lignes restantes ; sinon garde la dernière incomplète
+      buffer = done ? '' : lines.pop();
 
       for (const line of lines) {
         if (!line.startsWith('data: ')) continue;
@@ -271,29 +273,22 @@ async function analyze() {
         // Une section parallèle est terminée
         if (payload.progress) {
           sectionsReceived++;
-          // Marque l'étape correspondante comme done
           const stepId = sectionToStep[payload.progress];
           if (stepId) {
             const el = document.getElementById(stepId);
             if (el) { el.classList.remove('active'); el.classList.add('done'); }
           }
-          // Active l'étape suivante si elle existe
-          const nextStep = `step-${payload.progress + 1}`;
-          const nextEl = document.getElementById(nextStep);
-          if (nextEl && !nextEl.classList.contains('done')) {
-            nextEl.classList.add('active');
-          }
-          // Barre : 10% de base + 20% par section reçue
-          const pct = 10 + sectionsReceived * 20;
-          setProgress(pct, `${sectionsReceived}/4 sections analysées…`);
+          const nextEl = document.getElementById(`step-${payload.progress + 1}`);
+          if (nextEl && !nextEl.classList.contains('done')) nextEl.classList.add('active');
+          setProgress(10 + sectionsReceived * 20, `${sectionsReceived}/4 sections analysées…`);
         }
 
-        // Rapport complet assemblé reçu
+        // Rapport complet assemblé
         if (payload.report) {
           lastReportMarkdown = payload.report;
         }
 
-        // Signal de fin — tout est prêt
+        // Signal de fin explicite
         if (payload.done) {
           finishProgress();
           setTimeout(() => {
@@ -306,6 +301,8 @@ async function analyze() {
           return;
         }
       }
+
+      if (done) break;
     }
 
     // Fallback : stream fermé sans signal done
