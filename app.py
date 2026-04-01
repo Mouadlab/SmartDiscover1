@@ -3,6 +3,7 @@ import re
 import io
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import wraps
 from flask import Flask, render_template, request, jsonify, Response, stream_with_context
 import google.generativeai as genai
 import requests
@@ -17,57 +18,30 @@ except ImportError:
 
 app = Flask(__name__)
 
+# ── Authentification Basic ───────────────────────────────────────────────────
+AUTH_USER = "SmartKeyword"
+AUTH_PASS = "Sm@rtkeyword2026xCo$mo5"
+
+def require_auth(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth = request.authorization
+        if not auth or auth.username != AUTH_USER or auth.password != AUTH_PASS:
+            return Response(
+                "Accès non autorisé.",
+                401,
+                {"WWW-Authenticate": 'Basic realm="SmartDiscover"'}
+            )
+        return f(*args, **kwargs)
+    return decorated
+
+# Clé API chargée depuis la variable d'environnement
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 CATEGORIES = [
     "Technologie", "Santé", "Politique", "Economie", "Climat",
     "Sciences", "Société", "Monde", "Finance", "Education",
     "E-Commerce", "Actualités (news)", "Immobilier"
-]
-
-# ── Définition des 4 sections ────────────────────────────────────────────────
-SECTIONS = [
-    {
-        "index": 1,
-        "title": "Analyse des Entités (Knowledge Graph)",
-        "prompt": (
-            "## 1. Analyse des Entités (Knowledge Graph)\n"
-            "* **Entités Principales Identifiées :** Liste les personnes, lieux, "
-            "organisations ou concepts clés trouvés.\n"
-            "* **Entités Manquantes (Opportunités) :** Quelles entités sémantiquement "
-            "proches ou contextuelles (LSI) manquent ?"
-        ),
-    },
-    {
-        "index": 2,
-        "title": "Optimisation des Titres (Haut CTR pour Discover)",
-        "prompt": (
-            "## 2. Optimisation des Titres (Haut CTR pour Discover)\n"
-            "Propose 5 titres optimisés pour Google Discover. Ils doivent être "
-            "accrocheurs sans être du clickbait mensonger.\n"
-            "* Titre 1 :\n* Titre 2 :\n* Titre 3 :\n* Titre 4 :\n* Titre 5 :"
-        ),
-    },
-    {
-        "index": 3,
-        "title": "Concepts Manquants & Profondeur (E-E-A-T)",
-        "prompt": (
-            "## 3. Concepts Manquants & Profondeur (E-E-A-T)\n"
-            "Identifie les concepts ou sous-sujets absents qui empêchent cet article "
-            "d'être la référence ultime sur le sujet."
-        ),
-    },
-    {
-        "index": 4,
-        "title": "Recommandations de Réécriture",
-        "prompt": (
-            "## 4. Recommandations de Réécriture\n"
-            "Propose 2 ou 3 paragraphes spécifiques réécrits pour améliorer :\n"
-            "* L'accroche (le début de l'article).\n"
-            "* La clarté d'un passage complexe.\n"
-            "* L'ajout d'émotion ou d'expertise."
-        ),
-    },
 ]
 
 
@@ -100,32 +74,56 @@ def extract_text_from_url(url):
         raise ValueError(f"Impossible d'extraire le contenu : {str(e)}")
 
 
-def call_gemini_section(section, category, content):
-    """Appelle Gemini pour UNE section. Exécuté en parallèle."""
-    prompt = f"""Tu es un expert en SEO et spécialiste de l'algorithme Google Discover.
-Analyse le contenu suivant et réponds UNIQUEMENT à la section demandée, en Markdown, en Français.
+def analyze_with_gemini(category, content):
+    if not GEMINI_API_KEY:
+        raise ValueError("La variable d'environnement GEMINI_API_KEY n'est pas définie sur ce serveur.")
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel("gemini-2.5-flash")
+    prompt = f"""
+Tu es un expert en SEO et spécialiste de l'algorithme Google Discover.
+Ta mission est d'optimiser un contenu pour qu'il devienne viral sur Discover.
 
 CONTEXTE :
 - Rubrique : {category}
 - Contenu à analyser :
 "{content}"
 
-TÂCHE — réponds uniquement à cette section :
-{section['prompt']}
+TACHE :
+Analyse ce texte et fournis un rapport détaillé en Markdown structuré comme suit :
+
+## 1. Analyse des Entités (Knowledge Graph)
+* **Entités Principales Identifiées :** Liste les personnes, lieux, organisations ou concepts clés trouvés.
+* **Entités Manquantes (Opportunités) :** Quelles entités sémantiquement proches ou contextuelles (LSI) manquent ?
+
+## 2. Optimisation des Titres (Haut CTR pour Discover)
+Propose 5 titres optimisés pour Google Discover.
+* Titre 1 :
+* Titre 2 :
+* Titre 3 :
+* Titre 4 :
+* Titre 5 :
+
+## 3. Concepts Manquants & Profondeur (E-E-A-T)
+Identifie les concepts ou sous-sujets absents qui empêchent cet article d'être la référence ultime sur le sujet.
+
+## 4. Recommandations de Réécriture
+Propose 2 ou 3 paragraphes spécifiques réécrits pour améliorer l'accroche, la clarté ou l'expertise.
+
+Réponds en Français, avec un ton professionnel et pédagogique.
 """
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel("gemini-2.5-flash")
     response = model.generate_content(prompt)
-    return section["index"], response.text.strip()
+    return response.text
 
 
 @app.route("/")
+@require_auth
 def index():
     api_key_configured = bool(GEMINI_API_KEY)
     return render_template("index.html", categories=CATEGORIES, api_key_configured=api_key_configured)
 
 
 @app.route("/extract", methods=["POST"])
+@require_auth
 def extract():
     data = request.get_json()
     url = data.get("url", "").strip()
@@ -140,58 +138,25 @@ def extract():
         return jsonify({"error": str(e)}), 422
 
 
-# ── Route analyze : 4 appels parallèles + SSE ───────────────────────────────
 @app.route("/analyze", methods=["POST"])
+@require_auth
 def analyze():
     data = request.get_json()
     category = data.get("category", "Technologie")
     content = data.get("content", "").strip()
-
     if len(content) < 50:
         return jsonify({"error": "Le texte est trop court pour être analysé."}), 400
-
-    if not GEMINI_API_KEY:
-        return jsonify({"error": "La variable d'environnement GEMINI_API_KEY n'est pas définie."}), 500
-
-    def generate():
-        try:
-            results = {}
-
-            # Lance les 4 appels Gemini en parallèle
-            with ThreadPoolExecutor(max_workers=4) as executor:
-                futures = {
-                    executor.submit(call_gemini_section, section, category, content): section
-                    for section in SECTIONS
-                }
-                for future in as_completed(futures):
-                    try:
-                        idx, text = future.result()
-                        results[idx] = text
-                        # Envoie un token de progression au frontend
-                        yield f"data: {json.dumps({'progress': idx})}\n\n"
-                    except Exception as e:
-                        yield f"data: {json.dumps({'error': str(e)})}\n\n"
-                        return
-
-            # Assemble le rapport final dans l'ordre des sections
-            full_report = "\n\n".join(results[s["index"]] for s in SECTIONS)
-            yield f"data: {json.dumps({'report': full_report})}\n\n"
-            yield f"data: {json.dumps({'done': True})}\n\n"
-
-        except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
-
-    return Response(
-        stream_with_context(generate()),
-        mimetype="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        }
-    )
+    try:
+        result = analyze_with_gemini(category, content)
+        return jsonify({"report": result})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 500
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/upload", methods=["POST"])
+@require_auth
 def upload():
     if "file" not in request.files:
         return jsonify({"error": "Aucun fichier reçu."}), 400
