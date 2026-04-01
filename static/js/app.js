@@ -147,26 +147,10 @@ let progressTimer = null;
 function startProgress() {
   document.getElementById('result-placeholder').classList.add('hidden');
   document.getElementById('analysis-progress').classList.remove('hidden');
-  setProgress(0, 'Connexion à Gemini AI');
+  // step-1 "Lecture du contenu" actif immédiatement
   STEPS.forEach(s => document.getElementById(s.id).classList.remove('active', 'done'));
-
-  let stepIdx = 0;
-  const delays = [400, 1800, 3400, 5200, 7200];
-
-  function tick() {
-    if (stepIdx >= STEPS.length) return;
-    STEPS.slice(0, stepIdx).forEach(s => {
-      document.getElementById(s.id).classList.replace('active', 'done') ||
-      document.getElementById(s.id).classList.remove('active');
-      document.getElementById(s.id).classList.add('done');
-    });
-    document.getElementById(STEPS[stepIdx].id).classList.add('active');
-    setProgress(STEPS[stepIdx].pct, STEPS[stepIdx].label);
-    stepIdx++;
-    if (stepIdx < STEPS.length)
-      progressTimer = setTimeout(tick, delays[stepIdx] - delays[stepIdx - 1]);
-  }
-  progressTimer = setTimeout(tick, delays[0]);
+  document.getElementById('step-1').classList.add('active');
+  setProgress(5, 'Envoi du contenu à Gemini…');
 }
 
 function finishProgress() {
@@ -255,13 +239,15 @@ async function analyze() {
       return;
     }
 
-    // Lecture du stream SSE ligne par ligne
+    // Lecture du stream SSE — progression pilotée par les events serveur
     const reader  = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer    = '';
 
-    // Map section index → step id pour la progression
+    // section index (1-4) → step HTML id
     const sectionToStep = { 1: 'step-2', 2: 'step-3', 3: 'step-4', 4: 'step-5' };
+    // sections reçues dans l'ordre d'arrivée (parallèle = ordre aléatoire)
+    let sectionsReceived = 0;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -282,22 +268,32 @@ async function analyze() {
           return;
         }
 
-        // Une section est terminée — coche l'étape correspondante
+        // Une section parallèle est terminée
         if (payload.progress) {
+          sectionsReceived++;
+          // Marque l'étape correspondante comme done
           const stepId = sectionToStep[payload.progress];
           if (stepId) {
             const el = document.getElementById(stepId);
             if (el) { el.classList.remove('active'); el.classList.add('done'); }
           }
-          // Met à jour la barre de progression (25% par section)
-          setProgress(payload.progress * 23 + 10, `Section ${payload.progress}/4 analysée…`);
+          // Active l'étape suivante si elle existe
+          const nextStep = `step-${payload.progress + 1}`;
+          const nextEl = document.getElementById(nextStep);
+          if (nextEl && !nextEl.classList.contains('done')) {
+            nextEl.classList.add('active');
+          }
+          // Barre : 10% de base + 20% par section reçue
+          const pct = 10 + sectionsReceived * 20;
+          setProgress(pct, `${sectionsReceived}/4 sections analysées…`);
         }
 
-        // Rapport complet reçu
+        // Rapport complet assemblé reçu
         if (payload.report) {
           lastReportMarkdown = payload.report;
         }
 
+        // Signal de fin — tout est prêt
         if (payload.done) {
           finishProgress();
           setTimeout(() => {
