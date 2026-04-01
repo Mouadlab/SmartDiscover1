@@ -249,14 +249,17 @@ async function analyze() {
     // sections reçues dans l'ordre d'arrivée (parallèle = ordre aléatoire)
     let sectionsReceived = 0;
 
-    while (true) {
-      const { done, value } = await reader.read();
+    let streamDone = false;
 
-      // Traite aussi le buffer résiduel quand le stream se ferme
-      const chunk = done ? '' : decoder.decode(value, { stream: true });
-      buffer += chunk;
+    while (!streamDone) {
+      const { done, value } = await reader.read();
+      streamDone = done;
+
+      // Ajoute le chunk (ou vide si fin de stream) au buffer
+      if (value) buffer += decoder.decode(value, { stream: !done });
+
+      // À la fermeture du stream, force le traitement de tout ce qui reste
       const lines = buffer.split('\n');
-      // Si stream fermé, traite toutes les lignes restantes ; sinon garde la dernière incomplète
       buffer = done ? '' : lines.pop();
 
       for (const line of lines) {
@@ -270,7 +273,6 @@ async function analyze() {
           return;
         }
 
-        // Une section parallèle est terminée
         if (payload.progress) {
           sectionsReceived++;
           const stepId = sectionToStep[payload.progress];
@@ -283,27 +285,19 @@ async function analyze() {
           setProgress(10 + sectionsReceived * 20, `${sectionsReceived}/4 sections analysées…`);
         }
 
-        // Rapport complet assemblé
         if (payload.report) {
           lastReportMarkdown = payload.report;
         }
 
-        // Signal de fin explicite
         if (payload.done) {
-          finishProgress();
-          setTimeout(() => {
-            hideProgress();
-            resultContent.innerHTML = marked.parse(lastReportMarkdown);
-            resultContent.classList.remove('hidden');
-            exportBar.classList.remove('hidden');
-            exportBar.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          }, 500);
-          return;
+          streamDone = true;
+          break;
         }
       }
-
-      if (done) break;
     }
+
+    // Rendu final — que le stream ait envoyé done ou non
+    renderReport(resultContent, exportBar);
 
     // Fallback : stream fermé sans signal done
     renderReport(resultContent, exportBar);
