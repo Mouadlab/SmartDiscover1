@@ -20,7 +20,7 @@ app = Flask(__name__)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 CATEGORIES = [
-    "Technologie", "Santé", "Politique", "Economie", "Climat",
+    "Technologie", "Santé", "Politique", "Economie", "Climat", "Automobile",
     "Sciences", "Société", "Monde", "Finance", "Education",
     "E-Commerce", "Actualités (news)", "Immobilier"
 ]
