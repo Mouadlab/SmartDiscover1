@@ -1,1 +1,1 @@
-web: python --version && pip list && ls -la && python -c "import app; print('Import OK')" && sleep 600
+web: python -m gunicorn app:app --bind 0.0.0.0:5000 --access-logfile - --error-logfile -
